@@ -245,6 +245,104 @@ No Kubernetes, no Helm, no Docker required.
 
 The same scripts also ship as a Helm chart in [chart/](chart/). One `helm install` runs the whole lifecycle (optionally including bootstrap as an initContainer), and `helm uninstall` triggers a pre-delete hook that deletes posts and (if bootstrap was on) the team/channels/users. See [chart/README.md](chart/README.md).
 
+### Running in an air-gapped / isolated environment
+
+The script has **no runtime dependencies** other than k6 itself. All imports are either k6 built-ins (`k6/http`, `k6/ws`, `k6/data`, `k6/metrics`) or local files in `scripts/lib/`. There is no `npm install`, no Go modules to vendor, no language runtime to bring.
+
+What you need to copy across the air gap:
+
+| Item | How |
+|---|---|
+| **k6 binary** (~30 MB, single static binary) | Download from [github.com/grafana/k6/releases](https://github.com/grafana/k6/releases) on a connected machine, scp to the target |
+| **This repo** | `git clone` on a connected machine, then `tar`/`scp` or use a removable medium |
+| **(Kubernetes only) `grafana/k6` Docker image** | `docker pull`, `docker save` to a `.tar`, transfer, `docker load` + push to internal registry |
+| **(Kubernetes only) Helm + kubectl binaries** | Both are single static binaries — same drill as k6 |
+
+#### Air-gapped Linux (no Kubernetes)
+
+```sh
+# On a connected machine — pick a pinned version:
+K6_VERSION=0.51.0
+curl -L -o k6.tar.gz \
+  "https://github.com/grafana/k6/releases/download/v${K6_VERSION}/k6-v${K6_VERSION}-linux-amd64.tar.gz"
+tar -xzf k6.tar.gz   # produces k6-v0.51.0-linux-amd64/k6
+git clone <this-repo> mattermost-loadtest-k6
+tar -czf bundle.tgz k6-v${K6_VERSION}-linux-amd64 mattermost-loadtest-k6
+
+# Transfer bundle.tgz across the air gap, then on the isolated host:
+tar -xzf bundle.tgz
+sudo install -m 0755 k6-v0.51.0-linux-amd64/k6 /usr/local/bin/k6
+cd mattermost-loadtest-k6
+# ...continue with the normal Mode A or Mode B flow.
+```
+
+That's all. No network access is required during the test — only outbound to your Mattermost URL.
+
+#### Air-gapped Kubernetes (Helm chart)
+
+Two extra steps: mirror the `grafana/k6` image to your internal registry, then override `image.repository` in values.
+
+```sh
+# On a connected machine:
+docker pull grafana/k6:0.51.0
+docker save grafana/k6:0.51.0 -o k6-image.tar
+helm package chart -d dist/   # produces dist/mattermost-loadtest-k6-0.1.0.tgz
+
+# Transfer k6-image.tar + the chart .tgz, then in the isolated env:
+docker load -i k6-image.tar
+docker tag grafana/k6:0.51.0 registry.internal/grafana/k6:0.51.0
+docker push registry.internal/grafana/k6:0.51.0
+
+helm install lt ./mattermost-loadtest-k6-0.1.0.tgz \
+  --set image.repository=registry.internal/grafana/k6 \
+  --set image.tag=0.51.0 \
+  --set mattermost.url=https://mattermost.internal \
+  # ...rest of values
+```
+
+**Always pin `image.tag` to a specific version** in air-gapped envs — `latest` will fail with `ErrImagePull` if the image isn't already pulled with that tag.
+
+#### Things NOT needed in air-gapped mode
+
+- ❌ Internet access during the test
+- ❌ npm / yarn / Node.js
+- ❌ A Go toolchain (k6 is a single binary)
+- ❌ Any external metrics destination (k6 prints summary to stdout)
+- ❌ A package manager — k6 is just a binary you drop on PATH
+
+#### `make airgap-bundle` — one tarball, ready to scp
+
+On a connected build machine, run:
+
+```sh
+make airgap-bundle                                  # uses K6_VERSION + K6_ARCH defaults
+make airgap-bundle K6_VERSION=0.51.0 K6_ARCH=linux-arm64
+```
+
+This produces `dist/mattermost-loadtest-k6-airgap-v<version>-<arch>.tar.gz` containing:
+
+| Inside the bundle | Purpose |
+|---|---|
+| `k6` (binary) | Pinned, executable on the target Linux box |
+| `k6.sha256` | Integrity check for the binary |
+| `scripts/`, `config/`, `chart/` | Source tree |
+| `Makefile`, `README.md` | Same docs you have here |
+| `AIRGAP-README.txt` | Standalone quick-start runbook for whoever opens the bundle |
+| `mattermost-loadtest-k6-*.tgz` *(optional)* | `helm package` output, present if helm is installed on the build host |
+| `k6-image-<version>.tar` *(optional)* | `docker save` output of `grafana/k6:<version>`, present if docker is installed and can pull |
+
+The optional pieces are skipped automatically (with a clear log line) if `helm`/`docker` aren't installed on the build host — the bundle still works for non-K8s use.
+
+On the air-gapped target:
+
+```sh
+tar -xzf mattermost-loadtest-k6-airgap-*.tar.gz
+cd airgap
+shasum -a 256 -c k6.sha256                           # verify
+sudo install -m 0755 ./k6 /usr/local/bin/k6
+cat AIRGAP-README.txt                                # follow the runbook
+```
+
 ## Configuration knobs
 
 All set via env vars (see `Makefile`).

@@ -3,3 +3,4 @@ summary.json
 summary.html
 *.log
 .DS_Store
+dist/

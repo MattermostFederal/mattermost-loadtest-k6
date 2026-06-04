@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mmlt.fullname" . }}-scripts
+  labels:
+    {{- include "mmlt.labels" . | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob "files/scripts/**.js" }}
+  {{ trimPrefix "files/scripts/" $path | replace "/" "__" }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

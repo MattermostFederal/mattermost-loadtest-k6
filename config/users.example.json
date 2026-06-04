@@ -1,0 +1,5 @@
+[
+  { "login_id": "ltuser-01@example.com", "password": "CHANGE_ME_password1" },
+  { "login_id": "ltuser-02@example.com", "password": "CHANGE_ME_password2" },
+  { "login_id": "ltuser-03@example.com", "password": "CHANGE_ME_password3" }
+]

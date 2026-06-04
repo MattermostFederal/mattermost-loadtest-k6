@@ -1,0 +1,13 @@
+apiVersion: v2
+name: mattermost-loadtest-k6
+description: Run the mattermost-loadtest-k6 scenarios as a Kubernetes Job. Self-contained; only requires the cluster to reach your Mattermost URL.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - mattermost
+  - load-testing
+  - k6
+maintainers: []
+sources:
+  - https://github.com/your-org/mattermost-loadtest-k6

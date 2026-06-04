@@ -1,0 +1,35 @@
+Release {{ .Release.Name }} installed.
+
+Script:    {{ .Values.script }}
+Target:    {{ .Values.mattermost.url }}
+Bootstrap: {{ if .Values.bootstrap.enabled }}enabled ({{ .Values.bootstrap.numUsers }} users / {{ .Values.bootstrap.numChannels }} channels){{ else }}disabled (using pre-created users){{ end }}
+
+# Watch the job
+
+  kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+# Tail k6 output
+
+  kubectl -n {{ .Release.Namespace }} logs -f job/{{ include "mmlt.fullname" . }} {{ if .Values.bootstrap.enabled }}-c k6{{ end }}
+
+{{- if .Values.bootstrap.enabled }}
+
+# Tail the bootstrap initContainer (separate from k6)
+
+  kubectl -n {{ .Release.Namespace }} logs -f job/{{ include "mmlt.fullname" . }} -c bootstrap
+{{- end }}
+
+# Uninstall (triggers automatic cleanup on MM)
+
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+Cleanup that will run on uninstall:
+{{- if .Values.cleanup.posts }}
+  - Posts marked [lt-{{ .Release.Name }}] are deleted
+{{- end }}
+{{- if and .Values.cleanup.teardown .Values.bootstrap.enabled }}
+  - Bootstrap users, channels, and team are soft-deleted
+{{- end }}
+{{- if and (not .Values.cleanup.posts) (not (and .Values.cleanup.teardown .Values.bootstrap.enabled)) }}
+  - (none — cleanup disabled in values)
+{{- end }}

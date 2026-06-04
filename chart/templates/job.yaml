@@ -1,0 +1,139 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mmlt.fullname" . }}
+  labels:
+    {{- include "mmlt.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  parallelism: {{ .Values.job.parallelism }}
+  completions: {{ .Values.job.completions }}
+  activeDeadlineSeconds: {{ .Values.job.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "mmlt.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{ end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "mmlt.serviceAccountName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.bootstrap.enabled }}
+      initContainers:
+        - name: bootstrap
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["k6", "run"]
+          args:
+            {{- if .Values.mattermost.insecureSkipTLSVerify }}
+            - "--insecure-skip-tls-verify"
+            {{- end }}
+            - "/scripts/bootstrap.js"
+          env:
+            - name: MM_URL
+              value: {{ .Values.mattermost.url | quote }}
+            - name: RUN_ID
+              value: {{ .Release.Name | quote }}
+            - name: BOOTSTRAP_NUM_USERS
+              value: {{ .Values.bootstrap.numUsers | quote }}
+            - name: BOOTSTRAP_NUM_CHANNELS
+              value: {{ .Values.bootstrap.numChannels | quote }}
+            - name: BOOTSTRAP_TEAM_DISPLAY_NAME
+              value: {{ .Values.bootstrap.teamDisplayName | quote }}
+            {{- include "mmlt.adminEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+      {{- end }}
+
+      containers:
+        - name: k6
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["k6", "run"]
+          args:
+            {{- if .Values.mattermost.insecureSkipTLSVerify }}
+            - "--insecure-skip-tls-verify"
+            {{- end }}
+            - "/scripts/{{ include "mmlt.scriptFile" . }}"
+          env:
+            - name: MM_URL
+              value: {{ .Values.mattermost.url | quote }}
+            - name: RUN_ID
+              value: {{ .Release.Name | quote }}
+            {{- if not .Values.bootstrap.enabled }}
+            - name: USERS_FILE
+              value: {{ include "mmlt.usersFilePath" . | quote }}
+            {{- end }}
+            - name: TARGET_VUS
+              value: {{ .Values.load.targetVUs | quote }}
+            - name: RAMP_UP_SEC
+              value: {{ .Values.load.rampUpSec | quote }}
+            - name: STEADY_SEC
+              value: {{ .Values.load.steadySec | quote }}
+            - name: RAMP_DOWN_SEC
+              value: {{ .Values.load.rampDownSec | quote }}
+            - name: SESSION_SEC
+              value: {{ .Values.load.sessionSec | quote }}
+            - name: MIN_IDLE_MS
+              value: {{ .Values.load.minIdleMs | quote }}
+            - name: AVG_IDLE_MS
+              value: {{ .Values.load.avgIdleMs | quote }}
+            - name: PERCENT_REPLIES
+              value: {{ .Values.load.percentReplies | quote }}
+            - name: PERCENT_URGENT
+              value: {{ .Values.load.percentUrgent | quote }}
+            {{- if eq .Values.script "load-readonly" }}
+            - name: READ_ONLY
+              value: "true"
+            {{- end }}
+            {{- if .Values.load.ratesDistribution }}
+            - name: RATES_DISTRIBUTION
+              value: {{ .Values.load.ratesDistribution | quote }}
+            {{- end }}
+            {{- if .Values.bootstrap.enabled }}
+            - name: BOOTSTRAP_NUM_USERS
+              value: {{ .Values.bootstrap.numUsers | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            {{- if not .Values.bootstrap.enabled }}
+            - name: users
+              mountPath: /users
+              readOnly: true
+            {{- end }}
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "mmlt.fullname" . }}-scripts
+            items:
+{{- range $path, $_ := .Files.Glob "files/scripts/**.js" }}
+              - key: {{ trimPrefix "files/scripts/" $path | replace "/" "__" }}
+                path: {{ trimPrefix "files/scripts/" $path }}
+{{- end }}
+        {{- if not .Values.bootstrap.enabled }}
+        - name: users
+          secret:
+            secretName: {{ include "mmlt.usersSecretName" . }}
+        {{- end }}

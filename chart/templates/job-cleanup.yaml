@@ -1,0 +1,95 @@
+{{- if or .Values.cleanup.posts (and .Values.cleanup.teardown .Values.bootstrap.enabled) -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mmlt.fullname" . }}-cleanup
+  labels:
+    {{- include "mmlt.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.cleanup.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "mmlt.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "mmlt.serviceAccountName" . }}
+      containers:
+        {{- if .Values.cleanup.posts }}
+        - name: cleanup-posts
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["k6", "run"]
+          args:
+            {{- if .Values.mattermost.insecureSkipTLSVerify }}
+            - "--insecure-skip-tls-verify"
+            {{- end }}
+            - "/scripts/cleanup.js"
+          env:
+            - name: MM_URL
+              value: {{ .Values.mattermost.url | quote }}
+            - name: RUN_ID
+              value: {{ .Release.Name | quote }}
+            {{- if not .Values.bootstrap.enabled }}
+            - name: USERS_FILE
+              value: {{ include "mmlt.usersFilePath" . | quote }}
+            {{- else }}
+            - name: BOOTSTRAP_NUM_USERS
+              value: {{ .Values.bootstrap.numUsers | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            {{- if not .Values.bootstrap.enabled }}
+            - name: users
+              mountPath: /users
+              readOnly: true
+            {{- end }}
+        {{- end }}
+        {{- if and .Values.cleanup.teardown .Values.bootstrap.enabled }}
+        - name: cleanup-teardown
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          # Wait briefly so cleanup-posts (using user tokens) runs first.
+          args:
+            - |
+              sleep 5
+              k6 run \
+                {{- if .Values.mattermost.insecureSkipTLSVerify }} --insecure-skip-tls-verify{{ end }} \
+                /scripts/teardown.js
+          env:
+            - name: MM_URL
+              value: {{ .Values.mattermost.url | quote }}
+            - name: RUN_ID
+              value: {{ .Release.Name | quote }}
+            - name: BOOTSTRAP_NUM_USERS
+              value: {{ .Values.bootstrap.numUsers | quote }}
+            - name: BOOTSTRAP_NUM_CHANNELS
+              value: {{ .Values.bootstrap.numChannels | quote }}
+            {{- include "mmlt.adminEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+        {{- end }}
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "mmlt.fullname" . }}-scripts
+            items:
+{{- range $path, $_ := .Files.Glob "files/scripts/**.js" }}
+              - key: {{ trimPrefix "files/scripts/" $path | replace "/" "__" }}
+                path: {{ trimPrefix "files/scripts/" $path }}
+{{- end }}
+        {{- if and .Values.cleanup.posts (not .Values.bootstrap.enabled) }}
+        - name: users
+          secret:
+            secretName: {{ include "mmlt.usersSecretName" . }}
+        {{- end }}
+{{- end }}

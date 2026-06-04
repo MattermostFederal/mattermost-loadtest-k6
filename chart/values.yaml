@@ -1,0 +1,105 @@
+# --- k6 image -----------------------------------------------------------------
+image:
+  repository: grafana/k6
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# --- Which script to run ------------------------------------------------------
+# One of: load | smoke | preflight | cleanup | load-readonly
+script: load
+
+# --- Mattermost target --------------------------------------------------------
+mattermost:
+  url: "http://mattermost.example.com:8065"
+  insecureSkipTLSVerify: false
+
+# --- Bootstrap: create test team/channels/users at install time ---------------
+#
+# When enabled, an initContainer runs scripts/bootstrap.js as the admin BEFORE
+# the main k6 container starts. It creates:
+#   - 1 public team:    lt-<release-name>
+#   - N public channels: lt-<release-name>-ch{i}
+#   - N users:           lt-<release-name>-u{i} / lt-<release-name>-u{i}@loadtest.invalid
+#
+# On `helm uninstall`, a pre-delete hook runs scripts/teardown.js to remove
+# everything (plus posts marked [lt-<release-name>]).
+#
+# The load Job reads users deterministically from RUN_ID (release name), so no
+# users file/secret is needed when bootstrap is on.
+bootstrap:
+  enabled: false
+  numUsers: 50
+  numChannels: 5
+  teamDisplayName: ""              # default: "Load test <release-name>"
+  activeDeadlineSeconds: 1800
+
+# --- Admin credentials (needed when bootstrap.enabled OR cleanup.teardown) ----
+admin:
+  email: ""                        # set via --set or use existingSecret
+  password: ""
+  existingSecret: ""               # secret with keys ADMIN_EMAIL, ADMIN_PASSWORD
+
+# --- Test users (used when bootstrap is OFF) ----------------------------------
+# Either supply at install time (Option A) or reference an existing secret (B).
+#   A: helm install lt ./chart --set-file users.file=path/to/users.json
+#   B: kubectl create secret generic mm-users --from-file=users.json=...
+#      then set users.existingSecret=mm-users
+users:
+  file: ""                         # raw contents, set via --set-file
+  format: "json"                   # "json" or "csv"
+  existingSecret: ""
+  existingSecretKey: "users.json"
+
+# --- Load parameters ----------------------------------------------------------
+load:
+  targetVUs: 50
+  rampUpSec: 60
+  steadySec: 300
+  rampDownSec: 30
+  sessionSec: 180
+  minIdleMs: 1000
+  avgIdleMs: 20000
+  percentReplies: 0.18
+  percentUrgent: 0.001
+  ratesDistribution: ""
+
+# --- Cleanup on uninstall -----------------------------------------------------
+cleanup:
+  # If true, register a pre-delete hook Job that deletes posts created during
+  # the run (always safe, only deletes posts marked [lt-<release-name>]).
+  posts: true
+
+  # If true (and bootstrap.enabled was true), the pre-delete hook also runs
+  # teardown.js to delete the bootstrap users/channels/team.
+  teardown: true
+
+  activeDeadlineSeconds: 900
+
+# --- Main Job controls --------------------------------------------------------
+job:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 300
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+extraEnv: []
+podAnnotations: {}
+podLabels: {}

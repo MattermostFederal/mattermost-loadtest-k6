@@ -45,11 +45,15 @@ export function getClientConfig() {
 
 // --- teams / channels ---
 
+// Returns array of teams on success; `null` on transport / non-200. Callers
+// MUST distinguish "user has no teams" (returns []) from "API error"
+// (returns null) — masking the latter as empty leads to silent zero-work
+// in preflight and cleanup.
 export function getMyTeams(token) {
   const res = http.get(`${BASE}/api/v4/users/me/teams`, {
     headers: authOnly(token), tags: { kind: 'read', endpoint: 'teams' },
   });
-  return res.status === 200 ? res.json() : [];
+  return res.status === 200 ? res.json() : null;
 }
 
 export function getTeamsUnread(token, includeCollapsed = true) {
@@ -59,11 +63,13 @@ export function getTeamsUnread(token, includeCollapsed = true) {
   );
 }
 
+// Returns array on success; null on non-200. Same distinguishing-error-
+// from-empty contract as getMyTeams.
 export function getMyChannelsForTeam(token, teamId) {
   const res = http.get(`${BASE}/api/v4/users/me/teams/${teamId}/channels`, {
     headers: authOnly(token), tags: { kind: 'read', endpoint: 'channels' },
   });
-  return res.status === 200 ? res.json() : [];
+  return res.status === 200 ? res.json() : null;
 }
 
 export function getChannel(token, channelId) {
@@ -117,13 +123,28 @@ export function getPostsBefore(token, channelId, postId, perPage = 30) {
   );
 }
 
-export function createPost(token, channelId, message, rootId = '', priority = null) {
+export function createPost(token, channelId, message, rootId = '', priority = null, fileIds = null) {
   const body = { channel_id: channelId, message };
   if (rootId) body.root_id = rootId;
   if (priority) body.metadata = { priority };
+  if (fileIds && fileIds.length > 0) body.file_ids = fileIds;
   return http.post(`${BASE}/api/v4/posts`, JSON.stringify(body), {
     headers: authJSON(token), tags: { kind: 'write', endpoint: 'create_post' },
   });
+}
+
+// Single-file upload via raw body (MM also accepts multipart, but raw is
+// simpler and lower-overhead from k6). Returns the standard FileUpload
+// response: { file_infos: [{ id, name, size, ... }] }
+export function uploadFile(token, channelId, fileBytes, filename, contentType = 'application/octet-stream') {
+  return http.post(
+    `${BASE}/api/v4/files?channel_id=${channelId}&filename=${encodeURIComponent(filename)}`,
+    fileBytes,
+    {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
+      tags: { kind: 'write', endpoint: 'upload_file' },
+    }
+  );
 }
 
 export function editPost(token, postId, message) {
@@ -137,6 +158,16 @@ export function editPost(token, postId, message) {
 export function deletePost(token, postId) {
   return http.del(`${BASE}/api/v4/posts/${postId}`, null, {
     headers: authOnly(token), tags: { kind: 'write', endpoint: 'delete_post' },
+  });
+}
+
+// Permanent post delete — removes the Post row, FileInfo rows for attached
+// files, AND the blobs on the file backend. Gated by sysadmin permission
+// and ServiceSettings.EnableAPIPostDeletion. This is the only API surface
+// that fully cleans uploaded files (channel-permanent-delete skips them).
+export function deletePostPermanent(token, postId) {
+  return http.del(`${BASE}/api/v4/posts/${postId}?permanent=true`, null, {
+    headers: authOnly(token), tags: { kind: 'admin', endpoint: 'delete_post_permanent' },
   });
 }
 
@@ -297,4 +328,118 @@ export function deleteUser(token, userId) {
   return http.del(`${BASE}/api/v4/users/${userId}`, null, {
     headers: authOnly(token), tags: { kind: 'admin', endpoint: 'delete_user' },
   });
+}
+
+// --- admin: permanent (hard) delete -------------------------------------------
+// These require the matching ServiceSettings.EnableAPI*Deletion flag to be true
+// on the server. Hard delete removes the row from the DB and cannot be undone
+// outside of a backup restore.
+
+export function deleteUserPermanent(token, userId) {
+  return http.del(`${BASE}/api/v4/users/${userId}?permanent=true`, null, {
+    headers: authOnly(token), tags: { kind: 'admin', endpoint: 'delete_user_permanent' },
+  });
+}
+
+export function deleteTeamPermanent(token, teamId) {
+  return http.del(`${BASE}/api/v4/teams/${teamId}?permanent=true`, null, {
+    headers: authOnly(token), tags: { kind: 'admin', endpoint: 'delete_team_permanent' },
+  });
+}
+
+export function deleteChannelPermanent(token, channelId) {
+  return http.del(`${BASE}/api/v4/channels/${channelId}?permanent=true`, null, {
+    headers: authOnly(token), tags: { kind: 'admin', endpoint: 'delete_channel_permanent' },
+  });
+}
+
+// --- admin: server config (used to toggle EnableAPI*Deletion at hard teardown) -
+// Three endpoints used here:
+//   GET /api/v4/config        — read full config (we use this for snapshot)
+//   PUT /api/v4/config        — full replacement (kept for legacy callers;
+//                               teardown/cleanup no longer use it)
+//   PUT /api/v4/config/patch  — surgical merge of only the keys we send
+//                               (added in MM 5.20+; what teardown.js and
+//                               cleanup.js use to flip the EnableAPI*Deletion
+//                               flags without touching unrelated config)
+//
+// Why patch matters: full PUT carries the entire config blob, which creates
+// (a) a clobber risk if another admin is making concurrent changes and
+// (b) noisy audit log entries showing the whole config as the "diff."
+// Patch is single-key surgery; both issues go away.
+
+export function getMe(token) {
+  return http.get(`${BASE}/api/v4/users/me`, {
+    headers: authOnly(token), tags: { kind: 'admin', endpoint: 'get_me' },
+  });
+}
+
+export function getConfig(token) {
+  return http.get(`${BASE}/api/v4/config`, {
+    headers: authOnly(token), tags: { kind: 'admin', endpoint: 'get_config' },
+  });
+}
+
+export function updateConfig(token, config) {
+  return http.put(`${BASE}/api/v4/config`, JSON.stringify(config), {
+    headers: authJSON(token), tags: { kind: 'admin', endpoint: 'update_config' },
+  });
+}
+
+// Surgical config update — sends ONLY the keys in `patch` (rest of the
+// config untouched). Drastically reduces clobber risk vs the full PUT, and
+// shrinks the audit-log diff to just the fields we care about.
+//
+// Example: patchConfig(token, { ServiceSettings: { EnableAPIPostDeletion: true } })
+export function patchConfig(token, patch) {
+  return http.put(`${BASE}/api/v4/config/patch`, JSON.stringify(patch), {
+    headers: authJSON(token), tags: { kind: 'admin', endpoint: 'patch_config' },
+  });
+}
+
+// CRITICAL silent-failure guard: MM's writeFilter at api4/config.go:403-459
+// drops fields whose `access:` struct tag is absent unless the caller has
+// PermissionManageSystem (system_admin). The four EnableAPI*Deletion fields
+// have no access tag (model/config.go:448-472), so a granular RBAC admin
+// passes the outer SysconsoleWritePermissions guard but the merge silently
+// drops the fields — patchConfig returns 200 OK with the values unchanged.
+//
+// verifyServiceSettingsFlags re-reads /api/v4/config and compares each key
+// in `expected` against the live value. Returns null when all match, or an
+// array of {flag, want, got} mismatches.
+//
+// Callers MUST invoke this after every patch that touches deletion flags
+// and abort the run when mismatches surface — the alternative is a sweep
+// run on stale-true assumption that silently 501s every delete.
+export function verifyServiceSettingsFlags(token, expected) {
+  const r = getConfig(token);
+  if (!r || r.status !== 200) {
+    return [{ flag: '<get-config>', want: 'reachable', got: `status=${r && r.status}` }];
+  }
+  const live = r.json('ServiceSettings') || {};
+  const mismatches = [];
+  for (const [flag, want] of Object.entries(expected)) {
+    const got = live[flag] === true;
+    if (got !== want) mismatches.push({ flag, want, got });
+  }
+  return mismatches.length === 0 ? null : mismatches;
+}
+
+// --- admin: discovery (replaces count-based iteration in teardown) ------------
+// Lists users in a team page-by-page. Used to find the bootstrap users by
+// username prefix even if BOOTSTRAP_NUM_USERS at teardown doesn't match what
+// bootstrap actually created.
+
+export function getUsersInTeam(token, teamId, page = 0, perPage = 200) {
+  return http.get(
+    `${BASE}/api/v4/users?in_team=${teamId}&page=${page}&per_page=${perPage}`,
+    { headers: authOnly(token), tags: { kind: 'admin', endpoint: 'users_in_team' } }
+  );
+}
+
+export function getChannelsForTeam(token, teamId, page = 0, perPage = 200) {
+  return http.get(
+    `${BASE}/api/v4/teams/${teamId}/channels?page=${page}&per_page=${perPage}`,
+    { headers: authOnly(token), tags: { kind: 'admin', endpoint: 'channels_for_team' } }
+  );
 }

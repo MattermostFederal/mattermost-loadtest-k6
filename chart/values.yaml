@@ -1,12 +1,81 @@
 # --- k6 image -----------------------------------------------------------------
+# Keep image.tag in lock-step with K6_VERSION in the Makefile so the air-gap
+# bundle and the Helm chart use the same binary.
 image:
   repository: grafana/k6
-  tag: latest
+  tag: "2.0.0"
   pullPolicy: IfNotPresent
 
 # --- Which script to run ------------------------------------------------------
-# One of: load | smoke | preflight | cleanup | load-readonly
+# One of: load | load-readonly | load-summary | smoke | preflight | cleanup |
+#         breakpoint | load-search | load-attachments | load-realtime
 script: load
+
+# --- Capacity / breakpoint scenario knobs (only used when script=breakpoint) --
+breakpoint:
+  maxVUs: 1000
+  duration: "30m"
+  writeP95Ms: 1000
+  delayAbortEval: "2m"
+
+# --- Targeted-stressor knobs ---------------------------------------------------
+# Keyed by full script name (matches `script:` above). Adding a new
+# load-* script means dropping its config block here under its filename —
+# no template edits required.
+stressors:
+  load-search:
+    weightMultiplier: 50
+  # Conservative defaults safe on a single-VM local-disk target. Worst-case
+  # projected upload at these values is ~2 MB total for a default run. For
+  # capable backends (S3, MinIO scaled, large local volumes), override
+  # sizeBytes/targetVUs/steadySec and set confirmLarge=true to bypass the
+  # soft-limit gate.
+  load-attachments:
+    targetVUs: 10             # was 50 — safe on smallest target
+    steadySec: 120            # was 600 — short duration limits accumulation
+    sizeBytes: 10240          # 10 KB per upload (was 100 KB)
+    weight: 2                 # was 5
+    randomBytes: false        # true defeats file-store dedup at ~5-10% CPU cost
+    randomPoolSize: 8         # pre-generated random buffers when randomBytes=true
+    softLimitMB: 500          # setup() aborts if projected upload > this
+    confirmLarge: false       # set true to bypass softLimitMB
+  load-realtime:
+    postWeightMultiplier: 10
+    minIdleMs: 500
+    avgIdleMs: 2000
+
+# --- Real-time metrics → Prometheus remote-write -----------------------------
+# When url is set, the load Job adds `-o experimental-prometheus-rw` to k6
+# and wires the K6_PROMETHEUS_RW_* env vars. Works with both Prometheus
+# (--web.enable-remote-write-receiver) and Alloy (prometheus.receive_http).
+# Leave url="" to disable streaming metrics (k6 still prints to stdout and
+# writes summary.json if you set load.summary=true).
+metrics:
+  prometheusRemoteWrite:
+    url: ""
+    username: ""
+    password: ""
+    bearerToken: ""
+    insecureSkipTLSVerify: false
+    pushInterval: "5s"
+    # Optional: reference a pre-created secret with keys PROM_USERNAME,
+    # PROM_PASSWORD, PROM_BEARER_TOKEN instead of inline values.
+    existingSecret: ""
+
+  # SLO thresholds — single source of truth for pass/fail. Keys map 1:1
+  # to SLO_* env vars in scripts/lib/thresholds.js via snakecase+upper:
+  #   writeP95Ms → SLO_WRITE_P95_MS, etc.
+  #
+  # Values below are the defaults; mirror lib/thresholds.js so the
+  # effective SLO is visible in `helm template` output without having to
+  # cross-reference the JS module. Override here to tighten or relax per
+  # environment.
+  slo:
+    httpReqFailed: 0.02
+    authP95Ms: 2000
+    readP95Ms: 500
+    writeP95Ms: 1000
+    wsConnectingP95Ms: 2000
 
 # --- Mattermost target --------------------------------------------------------
 mattermost:
@@ -69,9 +138,22 @@ cleanup:
   # the run (always safe, only deletes posts marked [lt-<release-name>]).
   posts: true
 
-  # If true (and bootstrap.enabled was true), the pre-delete hook also runs
-  # teardown.js to delete the bootstrap users/channels/team.
-  teardown: true
+  # Number of cleanup passes. >1 helps catch posts that hadn't been indexed
+  # yet on the first pass. Each extra pass waits passDelaySec then re-runs.
+  passes: 1
+  passDelaySec: 30
+
+  # Teardown mode for bootstrap-created users/channels/team. Only meaningful
+  # when bootstrap.enabled was true at install time.
+  #
+  #   none — leave everything in place (default; preserves post-test state for inspection)
+  #   soft — DELETE endpoints set delete_at. Channels/team archived, users deactivated.
+  #          No server config changes.
+  #   hard — Permanent removal. Teardown snapshots ServiceSettings.EnableAPI*Deletion,
+  #          flips all three to true, runs ?permanent=true sweep, restores originals
+  #          (even on partial failure). Requires the admin account to have permission
+  #          to PUT /api/v4/config.
+  teardownMode: none
 
   activeDeadlineSeconds: 900
 

@@ -43,11 +43,24 @@ function parseCSV(raw) {
   });
 }
 
-const usersFile = __ENV.USERS_FILE || './config/users.json';
+// No default for USERS_FILE — k6's SharedArray callback runs at module
+// init context (per k6/data source), so opening a non-existent default
+// path here would crash any script that imports this module, even ones
+// that never touch the users array (e.g. admin-path cleanup, teardown).
+//
+// Resolution order:
+//   1. BOOTSTRAP_NUM_USERS > 0 → derive users deterministically from RUN_ID
+//   2. USERS_FILE set         → open and parse that file
+//   3. Neither set            → return [] (callers reading .length get 0
+//                               and should produce a clear error)
+// Trim — USERS_FILE=' ' would be truthy under a simple !usersFile check
+// and reach open(' '), wasting the round-10 fix.
+const usersFile = (__ENV.USERS_FILE || '').trim();
 const bootstrapN = Number(__ENV.BOOTSTRAP_NUM_USERS || 0);
 
 export const users = new SharedArray('mm-users', () => {
   if (bootstrapN > 0) return generateBootstrapUsers(bootstrapN);
+  if (!usersFile) return [];
 
   const raw = open(usersFile);
   const parsed = usersFile.toLowerCase().endsWith('.csv')

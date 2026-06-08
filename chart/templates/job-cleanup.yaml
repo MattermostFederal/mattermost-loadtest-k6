@@ -1,4 +1,6 @@
-{{- if or .Values.cleanup.posts (and .Values.cleanup.teardown .Values.bootstrap.enabled) -}}
+{{- $teardownActive := and (ne .Values.cleanup.teardownMode "none") .Values.bootstrap.enabled -}}
+{{- $bothActive := and .Values.cleanup.posts $teardownActive -}}
+{{- if or .Values.cleanup.posts $teardownActive -}}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -20,8 +22,21 @@ spec:
     spec:
       restartPolicy: Never
       serviceAccountName: {{ include "mmlt.serviceAccountName" . }}
-      containers:
-        {{- if .Values.cleanup.posts }}
+
+      {{- /*
+        Ordering: when both cleanup-posts AND teardown should run, cleanup
+        goes in initContainers and teardown stays as the main container.
+        Kubernetes guarantees initContainers complete successfully before
+        the main container starts — replacing the old `sleep 5` race.
+
+        With `restartPolicy: Never`, an initContainer failure fails the
+        whole Pod, so teardown never runs when cleanup itself broke. That's
+        intentional: if cleanup-posts can't even complete, hard-deleting
+        users/channels would just orphan more state.
+      */}}
+
+      {{- if $bothActive }}
+      initContainers:
         - name: cleanup-posts
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -32,17 +47,7 @@ spec:
             {{- end }}
             - "/scripts/cleanup.js"
           env:
-            - name: MM_URL
-              value: {{ .Values.mattermost.url | quote }}
-            - name: RUN_ID
-              value: {{ .Release.Name | quote }}
-            {{- if not .Values.bootstrap.enabled }}
-            - name: USERS_FILE
-              value: {{ include "mmlt.usersFilePath" . | quote }}
-            {{- else }}
-            - name: BOOTSTRAP_NUM_USERS
-              value: {{ .Values.bootstrap.numUsers | quote }}
-            {{- end }}
+            {{- include "mmlt.cleanupEnv" . | nindent 12 }}
           volumeMounts:
             - name: scripts
               mountPath: /scripts
@@ -51,33 +56,60 @@ spec:
               mountPath: /users
               readOnly: true
             {{- end }}
-        {{- end }}
-        {{- if and .Values.cleanup.teardown .Values.bootstrap.enabled }}
+      containers:
         - name: cleanup-teardown
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["sh", "-c"]
-          # Wait briefly so cleanup-posts (using user tokens) runs first.
+          command: ["k6", "run"]
           args:
-            - |
-              sleep 5
-              k6 run \
-                {{- if .Values.mattermost.insecureSkipTLSVerify }} --insecure-skip-tls-verify{{ end }} \
-                /scripts/teardown.js
+            {{- if .Values.mattermost.insecureSkipTLSVerify }}
+            - "--insecure-skip-tls-verify"
+            {{- end }}
+            - "/scripts/teardown.js"
           env:
-            - name: MM_URL
-              value: {{ .Values.mattermost.url | quote }}
-            - name: RUN_ID
-              value: {{ .Release.Name | quote }}
-            - name: BOOTSTRAP_NUM_USERS
-              value: {{ .Values.bootstrap.numUsers | quote }}
-            - name: BOOTSTRAP_NUM_CHANNELS
-              value: {{ .Values.bootstrap.numChannels | quote }}
-            {{- include "mmlt.adminEnv" . | nindent 12 }}
+            {{- include "mmlt.teardownEnv" . | nindent 12 }}
           volumeMounts:
             - name: scripts
               mountPath: /scripts
-        {{- end }}
+      {{- else if .Values.cleanup.posts }}
+      containers:
+        - name: cleanup-posts
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["k6", "run"]
+          args:
+            {{- if .Values.mattermost.insecureSkipTLSVerify }}
+            - "--insecure-skip-tls-verify"
+            {{- end }}
+            - "/scripts/cleanup.js"
+          env:
+            {{- include "mmlt.cleanupEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            {{- if not .Values.bootstrap.enabled }}
+            - name: users
+              mountPath: /users
+              readOnly: true
+            {{- end }}
+      {{- else }}
+      containers:
+        - name: cleanup-teardown
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["k6", "run"]
+          args:
+            {{- if .Values.mattermost.insecureSkipTLSVerify }}
+            - "--insecure-skip-tls-verify"
+            {{- end }}
+            - "/scripts/teardown.js"
+          env:
+            {{- include "mmlt.teardownEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+      {{- end }}
+
       volumes:
         - name: scripts
           configMap:

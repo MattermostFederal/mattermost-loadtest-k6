@@ -2,12 +2,15 @@ apiVersion: v2
 name: mattermost-loadtest-k6
 description: Run the mattermost-loadtest-k6 scenarios as a Kubernetes Job. Self-contained; only requires the cluster to reach your Mattermost URL.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+# Chart version 1.0.0: cleanup.teardown (bool) replaced by cleanup.teardownMode
+# (none|soft|hard); hard teardown lifecycle for ServiceSettings.EnableAPI*Deletion.
+# appVersion tracks the k6 binary version (default image.tag in values.yaml).
+version: 1.0.0
+appVersion: "2.0.0"
 keywords:
   - mattermost
   - load-testing
   - k6
 maintainers: []
 sources:
-  - https://github.com/your-org/mattermost-loadtest-k6
+  - https://github.com/mattermost/mattermost-loadtest-k6

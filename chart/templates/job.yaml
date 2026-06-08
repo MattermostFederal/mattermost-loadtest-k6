@@ -69,6 +69,7 @@ spec:
             {{- if .Values.mattermost.insecureSkipTLSVerify }}
             - "--insecure-skip-tls-verify"
             {{- end }}
+            {{- include "mmlt.metricsArgs" . | nindent 12 }}
             - "/scripts/{{ include "mmlt.scriptFile" . }}"
           env:
             - name: MM_URL
@@ -79,20 +80,28 @@ spec:
             - name: USERS_FILE
               value: {{ include "mmlt.usersFilePath" . | quote }}
             {{- end }}
+            {{- /* Per-script load overrides: stressors.<script>.{targetVUs,steadySec}
+                  wins over the global load.* values when set. */}}
+            {{- $cfgEarly := (index .Values.stressors .Values.script) | default dict }}
             - name: TARGET_VUS
-              value: {{ .Values.load.targetVUs | quote }}
+              value: {{ ($cfgEarly.targetVUs | default .Values.load.targetVUs) | quote }}
             - name: RAMP_UP_SEC
               value: {{ .Values.load.rampUpSec | quote }}
             - name: STEADY_SEC
-              value: {{ .Values.load.steadySec | quote }}
+              value: {{ ($cfgEarly.steadySec | default .Values.load.steadySec) | quote }}
             - name: RAMP_DOWN_SEC
               value: {{ .Values.load.rampDownSec | quote }}
             - name: SESSION_SEC
               value: {{ .Values.load.sessionSec | quote }}
+            {{- /* Per-script idle overrides: any stressors.<script-name>
+                  block with minIdleMs/avgIdleMs wins over the default
+                  load.* values. Falls back cleanly for scripts without
+                  a stressor block. */}}
+            {{- $cfg := (index .Values.stressors .Values.script) | default dict }}
             - name: MIN_IDLE_MS
-              value: {{ .Values.load.minIdleMs | quote }}
+              value: {{ ($cfg.minIdleMs | default .Values.load.minIdleMs) | quote }}
             - name: AVG_IDLE_MS
-              value: {{ .Values.load.avgIdleMs | quote }}
+              value: {{ ($cfg.avgIdleMs | default .Values.load.avgIdleMs) | quote }}
             - name: PERCENT_REPLIES
               value: {{ .Values.load.percentReplies | quote }}
             - name: PERCENT_URGENT
@@ -109,6 +118,45 @@ spec:
             - name: BOOTSTRAP_NUM_USERS
               value: {{ .Values.bootstrap.numUsers | quote }}
             {{- end }}
+            {{- if eq .Values.script "breakpoint" }}
+            - name: BREAKPOINT_MAX_VUS
+              value: {{ .Values.breakpoint.maxVUs | quote }}
+            - name: BREAKPOINT_DURATION
+              value: {{ .Values.breakpoint.duration | quote }}
+            - name: BREAKPOINT_WRITE_P95_MS
+              value: {{ .Values.breakpoint.writeP95Ms | quote }}
+            - name: BREAKPOINT_DELAY_ABORT
+              value: {{ .Values.breakpoint.delayAbortEval | quote }}
+            {{- end }}
+            {{- if eq .Values.script "load-search" }}
+            - name: SEARCH_WEIGHT_MULTIPLIER
+              value: {{ $cfg.weightMultiplier | quote }}
+            {{- end }}
+            {{- if eq .Values.script "load-attachments" }}
+            - name: ATTACHMENT_SIZE_BYTES
+              value: {{ $cfg.sizeBytes | quote }}
+            - name: ATTACHMENT_WEIGHT
+              value: {{ $cfg.weight | quote }}
+            - name: ATTACHMENT_RANDOM_BYTES
+              value: {{ $cfg.randomBytes | quote }}
+            - name: ATTACHMENT_RANDOM_POOL_SIZE
+              value: {{ $cfg.randomPoolSize | default 8 | quote }}
+            - name: ATTACHMENT_SOFT_LIMIT_MB
+              value: {{ $cfg.softLimitMB | default 500 | quote }}
+            - name: ATTACHMENT_CONFIRM_LARGE
+              value: {{ $cfg.confirmLarge | default false | quote }}
+            {{- end }}
+            {{- if eq .Values.script "load-realtime" }}
+            - name: POST_WEIGHT_MULTIPLIER
+              value: {{ $cfg.postWeightMultiplier | quote }}
+            {{- end }}
+            {{- /* Optional SLO overrides — propagate from values.metrics.slo
+                  to the SLO_* env vars that lib/thresholds.js reads. */}}
+            {{- range $k, $v := .Values.metrics.slo }}
+            - name: {{ printf "SLO_%s" (snakecase $k | upper) }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- include "mmlt.metricsEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

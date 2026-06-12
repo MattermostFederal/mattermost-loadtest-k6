@@ -15,6 +15,12 @@ import { rateForVU, pickIdleMs } from './rates.js';
 // shows up in the k6 summary tagged by action name.
 const actionErrors = new Counter('mm_action_errors');
 
+// Backoff (seconds) before retrying after a failed login or an empty sync.
+// Without it, a VU whose iteration bails out is rescheduled immediately, so
+// bad creds hammer /users/login at full speed for the whole test — tripping
+// MM's per-account rate limiting and distorting the latency numbers.
+const FAIL_BACKOFF_SEC = Number(__ENV.LOGIN_FAIL_BACKOFF_SEC || 5);
+
 /**
  * verifyUsersAvailable — call from setup() in any load/breakpoint script.
  * Aborts the test at start if no user source is configured, so we don't
@@ -65,10 +71,16 @@ export function runVU(opts) {
 
   const creds = pickUser(__VU);
   const session = login(creds.login_id, creds.password);
-  if (!session) return;
+  if (!session) {
+    sleep(FAIL_BACKOFF_SEC);
+    return;
+  }
 
   const synced = initialSync(session.token, session.userId);
-  if (synced.allOpenChannelIds.length === 0) return;
+  if (synced.allOpenChannelIds.length === 0) {
+    sleep(FAIL_BACKOFF_SEC);
+    return;
+  }
 
   const rate = rateForVU(__VU);
   const ctx = {

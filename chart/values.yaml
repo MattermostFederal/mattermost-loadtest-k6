@@ -100,9 +100,8 @@ bootstrap:
   numUsers: 50
   numChannels: 5
   teamDisplayName: ""              # default: "Load test <release-name>"
-  activeDeadlineSeconds: 1800
 
-# --- Admin credentials (needed when bootstrap.enabled OR cleanup.teardown) ----
+# --- Admin credentials (needed when bootstrap.enabled OR cleanup.teardownMode != none) ---
 admin:
   email: ""                        # set via --set or use existingSecret
   password: ""
@@ -172,6 +171,22 @@ resources:
   limits:
     cpu: "2"
     memory: 2Gi
+
+# --- Pod / container hardening -------------------------------------------------
+# Applied to the load Job and the pre-delete cleanup Job. The grafana/k6
+# image already runs as a non-root user (uid 12345); runAsNonRoot enforces
+# it. k6 only reads the mounted scripts and writes to stdout, so a
+# read-only root filesystem is safe. Set either block to {} to disable.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
 
 nodeSelector: {}
 tolerations: []

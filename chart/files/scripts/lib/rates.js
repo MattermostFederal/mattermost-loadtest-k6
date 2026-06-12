@@ -59,7 +59,9 @@ export function rateForVU(vu) {
  * Equivalent to control.PickIdleTimeMs(min, avg, rate).
  */
 export function pickIdleMs(minIdleMs, avgIdleMs, rate) {
-  const span = avgIdleMs * 2 - minIdleMs * 2;
+  // Guard misconfiguration: AVG_IDLE_MS below MIN_IDLE_MS would make the
+  // span negative and idle times negative — actions would fire every tick.
+  const span = Math.max(0, avgIdleMs * 2 - minIdleMs * 2);
   const base = minIdleMs + Math.floor(Math.random() * span);
   return Math.round(base * rate);
 }

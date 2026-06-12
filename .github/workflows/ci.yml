@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # Keep in sync with Makefile K6_VERSION.
+  K6_VERSION: '2.0.0'
+
 jobs:
   # Parse every k6 script. `k6 inspect` runs the init context, so it catches
   # syntax errors AND unresolved imports (e.g. importing a name a module
@@ -15,6 +19,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: ${{ env.K6_VERSION }}
       - name: k6 inspect every script
         run: |
           set -euo pipefail
@@ -77,6 +83,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: ${{ env.K6_VERSION }}
 
       - name: Start Mattermost preview
         run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview

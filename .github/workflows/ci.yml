@@ -100,7 +100,7 @@ jobs:
           k6-version: ${{ env.K6_VERSION }}
 
       - name: Start Mattermost preview
-        run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview
+        run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview@sha256:480d7acb5b238e1a5a4d6ebe3a48bbe3b8fbbe1e0281cc7c105fa8ee5b3130b1
 
       - name: Wait for Mattermost to become ready
         run: |

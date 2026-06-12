@@ -1,10 +1,20 @@
-import { sleep, fail } from 'k6';
+import { sleep } from 'k6';
+import exec from 'k6/execution';
 import {
   login, getTeamByName, createTeam, addUserToTeam,
   getChannelByName, createChannel, addUserToChannel,
   getUserByUsername, createUser,
 } from './lib/api.js';
-import { RUN_ID, bootstrapUserDescriptor } from './lib/users.js';
+import { bootstrapUserDescriptor } from './lib/users.js';
+import { RUN_ID } from './lib/content.js';
+
+// k6's `fail()` does NOT cause non-zero exit — it logs and marks the
+// iteration failed, but the process still exits 0. exec.test.abort() exits
+// 108. The Helm initContainer relies on a non-zero exit here to stop the
+// main load job from starting against missing bootstrap state.
+function abort(msg) {
+  exec.test.abort(msg);
+}
 
 /**
  * Bootstrap MM state for a load-test run.
@@ -41,14 +51,14 @@ const TEAM_NAME = `lt-${RUN_ID}`;
 
 export default function () {
   if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-    fail('bootstrap: ADMIN_EMAIL and ADMIN_PASSWORD must be set');
+    abort('bootstrap: ADMIN_EMAIL and ADMIN_PASSWORD must be set');
   }
   if (NUM_USERS <= 0) {
-    fail('bootstrap: BOOTSTRAP_NUM_USERS must be > 0');
+    abort('bootstrap: BOOTSTRAP_NUM_USERS must be > 0');
   }
 
   const admin = login(ADMIN_EMAIL, ADMIN_PASSWORD);
-  if (!admin) fail('bootstrap: admin login failed');
+  if (!admin) abort('bootstrap: admin login failed');
   console.log(`bootstrap: logged in as admin (run_id=${RUN_ID})`);
 
   // -- team --
@@ -65,18 +75,37 @@ export default function () {
   console.log(`bootstrap: ${channelIds.length} channels ready`);
 
   // -- users --
-  let created = 0, reused = 0;
+  let created = 0, reused = 0, membershipFailures = 0;
   for (let i = 1; i <= NUM_USERS; i++) {
     const desc = bootstrapUserDescriptor(i);
     const r = ensureUser(admin.token, desc);
     if (r.created) created++; else reused++;
 
-    addUserToTeam(admin.token, teamId, r.id);
-    for (const ch of channelIds) addUserToChannel(admin.token, ch, r.id);
+    const tm = addUserToTeam(admin.token, teamId, r.id);
+    if (!tm || tm.status >= 300) {
+      console.error(`bootstrap: add ${desc.username} to team failed (status=${tm && tm.status})`);
+      membershipFailures++;
+    }
+    for (const ch of channelIds) {
+      const cm = addUserToChannel(admin.token, ch, r.id);
+      if (!cm || cm.status >= 300) {
+        console.error(`bootstrap: add ${desc.username} to channel ${ch} failed (status=${cm && cm.status})`);
+        membershipFailures++;
+      }
+    }
 
     if (i % 25 === 0) sleep(0.1);
   }
   console.log(`bootstrap: users created=${created} reused=${reused}`);
+  // Membership failures would otherwise only surface later as VUs that log
+  // in fine but see zero teams/channels — fail here with attribution instead.
+  if (membershipFailures > 0) {
+    abort(
+      `bootstrap: ${membershipFailures} team/channel membership call(s) failed — ` +
+      'affected users would log in with no teams or channels. Bootstrap is ' +
+      'idempotent; re-run it after investigating the errors above.'
+    );
+  }
   console.log(`bootstrap: done. Main load job can now connect.`);
 }
 
@@ -84,7 +113,7 @@ function ensureTeam(token, name, displayName) {
   const r = getTeamByName(token, name);
   if (r && r.status === 200) return r.json('id');
   const c = createTeam(token, name, displayName, 'O');
-  if (!c || c.status >= 300) fail(`create team failed: ${c && c.status} ${c && c.body}`);
+  if (!c || c.status >= 300) abort(`create team failed: ${c && c.status} ${c && c.body}`);
   return c.json('id');
 }
 
@@ -92,7 +121,7 @@ function ensureChannel(token, teamId, name, displayName) {
   const r = getChannelByName(token, teamId, name);
   if (r && r.status === 200) return r.json('id');
   const c = createChannel(token, teamId, name, displayName, 'O');
-  if (!c || c.status >= 300) fail(`create channel ${name} failed: ${c && c.status} ${c && c.body}`);
+  if (!c || c.status >= 300) abort(`create channel ${name} failed: ${c && c.status} ${c && c.body}`);
   return c.json('id');
 }
 
@@ -105,7 +134,7 @@ function ensureUser(token, desc) {
     password: desc.password,
   });
   if (!c || c.status >= 300) {
-    fail(`create user ${desc.username} failed: ${c && c.status} ${c && c.body}`);
+    abort(`create user ${desc.username} failed: ${c && c.status} ${c && c.body}`);
   }
   return { id: c.json('id'), created: true };
 }

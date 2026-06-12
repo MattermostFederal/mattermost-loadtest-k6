@@ -1,3 +1,7 @@
+// k6/ws is the legacy blocking WebSocket module. It's stable and its
+// blocking model fits the run-loop here, but k6 is steering new work toward
+// k6/experimental/websockets (event-loop based) — revisit this module when
+// next bumping K6_VERSION.
 import ws from 'k6/ws';
 import { Counter, Trend } from 'k6/metrics';
 import { WS_BASE } from './api.js';

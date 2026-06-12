@@ -22,6 +22,9 @@ spec:
     spec:
       restartPolicy: Never
       serviceAccountName: {{ include "mmlt.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -37,6 +40,9 @@ spec:
         - name: bootstrap
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext: {{- toYaml . | nindent 12 }}
+          {{- end }}
           command: ["k6", "run"]
           args:
             {{- if .Values.mattermost.insecureSkipTLSVerify }}
@@ -64,6 +70,9 @@ spec:
         - name: k6
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext: {{- toYaml . | nindent 12 }}
+          {{- end }}
           command: ["k6", "run"]
           args:
             {{- if .Values.mattermost.insecureSkipTLSVerify }}

@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Parse every k6 script. `k6 inspect` runs the init context, so it catches
+  # syntax errors AND unresolved imports (e.g. importing a name a module
+  # doesn't export) without needing a Mattermost server.
+  k6-parse:
+    name: k6 parse check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: grafana/setup-k6-action@v1
+      - name: k6 inspect every script
+        run: |
+          set -euo pipefail
+          for f in scripts/*.js; do
+            echo "==> k6 inspect $f"
+            k6 inspect "$f" > /dev/null
+          done
+
+  helm:
+    name: helm lint + template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: helm lint
+        run: helm lint chart
+      # The chart fails loudly when no user source is configured, so each
+      # template render has to pick a mode explicitly.
+      - name: helm template (Mode A — existing users secret)
+        run: helm template lt chart --set users.existingSecret=mm-users > /dev/null
+      - name: helm template (bootstrap + hard teardown + metrics)
+        run: |
+          helm template lt chart \
+            --set bootstrap.enabled=true \
+            --set cleanup.teardownMode=hard \
+            --set admin.email=admin@example.com \
+            --set admin.password=x \
+            --set metrics.prometheusRemoteWrite.url=http://prom:9090/api/v1/write \
+            > /dev/null
+
+  # chart/files/scripts/ is a copy of scripts/ refreshed by `make chart-sync`.
+  # Fail if someone changed scripts/ without re-syncing.
+  chart-sync:
+    name: chart/files/scripts drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Re-sync and check for drift
+        run: |
+          make chart-sync
+          if [ -n "$(git status --porcelain chart/files/scripts)" ]; then
+            echo "chart/files/scripts is out of sync with scripts/ — run 'make chart-sync' and commit:"
+            git status --porcelain chart/files/scripts
+            exit 1
+          fi
+
+  # End-to-end against a throwaway Mattermost: bootstrap -> smoke -> short
+  # load -> cleanup -> hard teardown. Exercises the whole Mode B lifecycle,
+  # including the EnableAPI*Deletion flag snapshot/restore path.
+  e2e:
+    name: e2e (mattermost-preview)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MM_URL: http://localhost:8065
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: Sys@dmin123!
+      RUN_ID: ci-${{ github.run_id }}
+      BOOTSTRAP_NUM_USERS: "5"
+      BOOTSTRAP_NUM_CHANNELS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Start Mattermost preview
+        run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview
+
+      - name: Wait for Mattermost to become ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS "$MM_URL/api/v4/system/ping" > /dev/null 2>&1; then
+              echo "Mattermost is up"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Mattermost did not become ready in time"
+          docker logs mm | tail -50
+          exit 1
+
+      - name: Create sysadmin (first user on a fresh server gets system_admin)
+        run: |
+          curl -fsS -X POST "$MM_URL/api/v4/users" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$ADMIN_EMAIL\",\"username\":\"sysadmin\",\"password\":\"$ADMIN_PASSWORD\"}" \
+            > /dev/null
+
+      - name: Bootstrap (team + channels + users)
+        run: make bootstrap
+
+      - name: Smoke (bootstrap-derived users)
+        run: k6 run scripts/smoke.js
+
+      # Relaxed SLOs: a preview image on a shared 2-core runner is not a
+      # performance target — this run only verifies the lifecycle works.
+      - name: Short load (creates marker posts)
+        env:
+          TARGET_VUS: "5"
+          RAMP_UP_SEC: "5"
+          STEADY_SEC: "30"
+          RAMP_DOWN_SEC: "5"
+          SESSION_SEC: "20"
+          AVG_IDLE_MS: "2000"
+          SLO_READ_P95_MS: "3000"
+          SLO_WRITE_P95_MS: "5000"
+          SLO_AUTH_P95_MS: "5000"
+          SLO_HTTP_REQ_FAILED: "0.05"
+        run: k6 run scripts/load.js
+
+      - name: Cleanup marker posts
+        run: make cleanup
+
+      - name: Hard teardown (flag snapshot/restore + permanent sweep)
+        run: make teardown-hard

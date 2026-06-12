@@ -10,10 +10,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # Keep in sync with Makefile K6_VERSION.
-  K6_VERSION: '2.0.0'
-
 jobs:
   # Parse every k6 script. `k6 inspect` runs the init context, so it catches
   # syntax errors AND unresolved imports (e.g. importing a name a module
@@ -25,6 +21,10 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      # Single source of truth: validate with the same k6 the Makefile pins
+      # (and that the air-gap bundle and chart image.tag are built from).
+      - name: Read pinned k6 version from Makefile
+        run: echo "K6_VERSION=$(awk -F'\\?=' '/^K6_VERSION/ {gsub(/ /, "", $2); print $2; exit}' Makefile)" >> "$GITHUB_ENV"
       - uses: grafana/setup-k6-action@db07bd9765aac508ef18982e52ab937fe633a065 # v1
         with:
           k6-version: ${{ env.K6_VERSION }}
@@ -95,12 +95,16 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - name: Read pinned k6 version from Makefile
+        run: echo "K6_VERSION=$(awk -F'\\?=' '/^K6_VERSION/ {gsub(/ /, "", $2); print $2; exit}' Makefile)" >> "$GITHUB_ENV"
       - uses: grafana/setup-k6-action@db07bd9765aac508ef18982e52ab937fe633a065 # v1
         with:
           k6-version: ${{ env.K6_VERSION }}
 
+      # Pinned so upstream image changes can't break CI out of the blue;
+      # bump deliberately when validating against a newer Mattermost.
       - name: Start Mattermost preview
-        run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview@sha256:480d7acb5b238e1a5a4d6ebe3a48bbe3b8fbbe1e0281cc7c105fa8ee5b3130b1
+        run: docker run -d --name mm -p 8065:8065 mattermost/mattermost-preview:11.7.3@sha256:4586dadc0cd2d7cd165f4a2f9b244ff7981b0c68bd8a620304ed3d14ca3398c9
 
       - name: Wait for Mattermost to become ready
         run: |

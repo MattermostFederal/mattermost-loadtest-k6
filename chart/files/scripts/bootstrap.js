@@ -82,13 +82,13 @@ export default function () {
     if (r.created) created++; else reused++;
 
     const tm = addUserToTeam(admin.token, teamId, r.id);
-    if (!tm || tm.status >= 300) {
+    if (memberAddFailed(tm)) {
       console.error(`bootstrap: add ${desc.username} to team failed (status=${tm && tm.status})`);
       membershipFailures++;
     }
     for (const ch of channelIds) {
       const cm = addUserToChannel(admin.token, ch, r.id);
-      if (!cm || cm.status >= 300) {
+      if (memberAddFailed(cm)) {
         console.error(`bootstrap: add ${desc.username} to channel ${ch} failed (status=${cm && cm.status})`);
         membershipFailures++;
       }
@@ -107,6 +107,16 @@ export default function () {
     );
   }
   console.log(`bootstrap: done. Main load job can now connect.`);
+}
+
+// Current MM treats add-member as idempotent (re-adding returns the existing
+// member with 2xx), but some releases respond 400 with an already-a-member
+// app error. Treat that as success so re-running bootstrap stays idempotent.
+function memberAddFailed(r) {
+  if (!r) return true;
+  if (r.status < 300) return false;
+  if (r.status === 400 && typeof r.body === 'string' && r.body.includes('already')) return false;
+  return true;
 }
 
 function ensureTeam(token, name, displayName) {

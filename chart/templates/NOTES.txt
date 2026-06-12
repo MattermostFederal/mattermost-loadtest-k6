@@ -29,7 +29,11 @@ Cleanup that will run on uninstall:
   - Posts marked [lt-{{ .Release.Name }}] are deleted
 {{- end }}
 {{- if $teardownActive }}
-  - Bootstrap users, channels, and team are removed (teardownMode={{ .Values.cleanup.teardownMode }})
+  {{- if eq .Values.cleanup.teardownMode "hard" }}
+  - Bootstrap users, channels, and team are PERMANENTLY removed (teardownMode=hard)
+  {{- else }}
+  - Bootstrap users are deactivated; channels and team archived — reversible (teardownMode=soft)
+  {{- end }}
 {{- end }}
 {{- if and (not .Values.cleanup.posts) (not $teardownActive) }}
   - (none — cleanup disabled in values)

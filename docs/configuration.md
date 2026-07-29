@@ -20,6 +20,7 @@ Complete env var index, action weights, rate distribution, and output interpreta
 | `PERCENT_URGENT` | 0.001 | Of root posts, fraction marked priority=urgent |
 | `READ_ONLY` | false | If true, write actions are no-ops |
 | `RATES_DISTRIBUTION` | (see below) | JSON array overriding the per-VU rate distribution |
+| `LOGIN_FAIL_BACKOFF_SEC` | 5 | Seconds a VU waits before retrying after a failed login or an empty initial sync (`scripts/lib/vu.js`). Without it, a VU whose iteration bails is rescheduled immediately, so bad creds hammer `/users/login` at full speed — tripping MM's per-account rate limiting and distorting latency numbers. Lower only if you understand the rate-limit trade-off. |
 
 ## Mode B (bootstrap + teardown)
 
@@ -93,6 +94,19 @@ All `SLO_*` vars are read by `scripts/lib/thresholds.js` and apply to load and b
 | `POST_WEIGHT_MULTIPLIER` | 10 | CreatePost weight multiplier |
 | `REALTIME_WS_CONNECT_P95_MS` | 3000 | ws_connecting SLO |
 | `REALTIME_CREATE_POST_P95_MS` | 1500 | create_post endpoint SLO |
+
+## Makefile / runtime knobs
+
+These are read by the `Makefile`, not the k6 scripts. They control which k6 binary the targets download/bundle and how output is wired — not the load profile.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `K6_VERSION` | `2.0.0` | Pinned k6 version. **Single source of truth** — keep `chart/values.yaml` `image.tag` in sync. Used by `airgap-bundle` to fetch the matching k6 release. |
+| `K6_ARCH` | `linux-amd64` | k6 release architecture for `airgap-bundle` (e.g. `macos-arm64`, `linux-arm64`). |
+| `MM_URL` | `http://localhost:8065` | Target URL (also a script var; the Makefile injects it for every target). |
+| `USERS_FILE` | `./config/users.json` | Mode A creds path (Makefile default; scripts themselves leave it unset). |
+
+Derived automatically — you do **not** set these directly: `K6_OUT_ARGS` and `K6_RUN_TAGS` are computed from `K6_PROMETHEUS_RW_SERVER_URL`. When that URL is set, the Makefile appends `-o experimental-prometheus-rw` and `--tag run_id=<RUN_ID>` to every `k6 run`; when it's empty, both expand to nothing.
 
 ## Prometheus remote-write
 

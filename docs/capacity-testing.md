@@ -18,6 +18,52 @@ BREAKPOINT_MAX_VUS=5000 BREAKPOINT_DURATION=60m BREAKPOINT_WRITE_P95_MS=800 make
 
 The summary lists which threshold tripped, plus per-`kind` and per-`endpoint` p95s up to the abort moment. **The endpoint that tripped first IS the coarse-grained bottleneck signal** — see [Bottleneck attribution](#bottleneck-attribution) below.
 
+## `make load-realistic` — capacity sizing, not auth stress
+
+The default `load` profile re-authenticates every VU every `SESSION_SEC` (180s). Real
+deployments run session lifetimes measured in days — Mattermost's own default is 30 —
+so the default profile spends far more CPU on authentication than any production
+instance would.
+
+This matters more than it sounds. Mattermost v11 hashes passwords with **PBKDF2-SHA256
+at 600,000 iterations** (OWASP's 2023 recommendation, stored in PHC format and *not*
+exposed to configuration). Measured cost is **~0.403 CPU-seconds per login**, which caps
+a server at roughly 20 logins/second per 8 cores no matter what else is tuned. Login rate
+therefore dominates the CPU profile, and `load` output reads as a capacity number when it
+is really an auth-stress number.
+
+```sh
+# Hour-long sessions, gradual arrival — use this for sizing
+make load-realistic
+
+# Same knobs still apply
+TARGET_VUS=1000 STEADY_SEC=900 make load-realistic
+```
+
+| Var | `load` default | `load-realistic` default |
+|---|---|---|
+| `SESSION_SEC` | 180 | **3600** |
+| `RAMP_UP_SEC` | 60 | **240** |
+| `STEADY_SEC` | 300 | **600** |
+
+Measured difference on 8 vCPU at 1000 VUs — same hardware, same user count:
+
+| Profile | auth p95 | read p95 | throughput | CPU |
+|---|---|---|---|---|
+| `load` (3-min sessions) | 650 ms | 145 ms | 77 req/s | 58% |
+| `load-realistic` (1-hr sessions) | 500 ms | 147 ms | 46 req/s | **24%** |
+
+Note that throughput falls alongside CPU. The saving is not purely authentication:
+longer sessions also remove the repeated **initial sync** that follows every login. Both
+are artefacts of short sessions and both disappear under production-shaped behaviour —
+so attribute the reduction to "less login-and-sync churn" rather than to hashing alone.
+
+**Arrival rate is a first-class variable.** `RAMP_UP_SEC` is raised here for the same
+reason. In testing, 1000 users arriving over 60s required 11.2 cores and breached SLOs;
+the identical 1000 over 240s required 4.62 cores and passed. If you are sizing for
+post-restart reconnection storms, test with the short ramp deliberately — that is the
+burst case, and it is a different number from steady-state capacity.
+
 ## Targeted bottleneck stressors
 
 When the breakpoint summary says "write broke at 600 VUs," the next question is *which* part of the write path. These three scenarios drive a single subsystem hard while keeping the rest of the session realistic:

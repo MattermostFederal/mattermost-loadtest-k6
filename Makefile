@@ -66,6 +66,8 @@ help:
 	@echo "  load             Realistic-user load (writes enabled). Override TARGET_VUS, STEADY_SEC, etc."
 	@echo "  load-readonly    Same as 'load' but READ_ONLY=true"
 	@echo "  load-summary     Same as 'load', writes summary.json"
+	@echo "  load-realistic   Production-shaped sessions (SESSION_SEC=3600, RAMP_UP_SEC=240)."
+	@echo "                   Use this for capacity sizing; 'load' is an auth-stress profile."
 	@echo ""
 	@echo "Capacity / bottleneck testing:"
 	@echo "  breakpoint       Ramp VU count until write p95 crosses BREAKPOINT_WRITE_P95_MS (default 1000ms)."
@@ -153,6 +155,24 @@ load: check-users
 
 load-readonly: check-users
 	$(ENV) READ_ONLY=true k6 run $(K6_OUT_ARGS) $(K6_RUN_TAGS) scripts/load.js
+
+# Production-shaped session behaviour rather than auth stress.
+#
+# The default profile re-authenticates every VU every SESSION_SEC (180s). Real
+# deployments run session lifetimes measured in days -- Mattermost's own default
+# is 30 days -- so the default profile spends far more CPU on password hashing
+# than any production instance would. Mattermost v11 hashes with PBKDF2-SHA256
+# at 600k iterations (~0.4 CPU-seconds per login, not configurable), so login
+# rate dominates the CPU profile and the default reads as a capacity number when
+# it is really an auth-stress number.
+#
+# This target holds each session for SESSION_SEC=3600 and ramps arrivals over
+# RAMP_UP_SEC=240 instead of 60. Both are overridable.
+load-realistic: check-users
+	$(ENV) SESSION_SEC=$${SESSION_SEC:-3600} \
+	       RAMP_UP_SEC=$${RAMP_UP_SEC:-240} \
+	       STEADY_SEC=$${STEADY_SEC:-600} \
+	       k6 run $(K6_OUT_ARGS) $(K6_RUN_TAGS) scripts/load.js
 
 load-summary: check-users
 	$(ENV) k6 run --summary-export=summary.json $(K6_OUT_ARGS) $(K6_RUN_TAGS) scripts/load.js

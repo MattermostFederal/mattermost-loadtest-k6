@@ -1,0 +1,110 @@
+mattermost:
+  enabled: true
+  values:
+    mattermostCR:
+      spec:
+        image: ${private_registry}${private_registry_image_repo:=/images}/docker.io/mattermost/mattermost-enterprise-edition
+        version: 11.5.1
+        elasticSearch: {}
+        updateJob:
+          disabled: true
+        fileStore:
+          local:
+            enabled: true
+            storageSize: 500Gi
+        licenseSecret: mm-license
+        mattermostEnv:
+          - name: MM_METRICSSETTINGS_ENABLE
+            value: "true"
+          - name: MM_SERVICESETTINGS_SITEURL
+            value: https://mattermost.${cluster_domain}
+          - name: MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL
+            value: "false"
+          - name: MM_EMAILSETTINGS_ENABLEDESKTOPLANDINGPAGE
+            value: "false"
+          - name: MM_EMAILSETTINGS_ENABLESIGNINWITHEMAIL
+            value: "false"
+          - name: MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE
+            value: "false"
+          - name: MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION
+            value: "false"
+          - name: MM_LOGSETTINGS_ENABLEFILE
+            value: "false"
+          - name: MM_LOGSETTINGS_ENABLEDIAGNOSTICS
+            value: "false"
+          - name: MM_SERVICESETTINGS_ENABLESECURITYFIXALERT
+            value: "false"
+          - name: MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED
+            value: "false"
+          - name: MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED
+            value: "false"
+          - name: MM_SERVICESETTINGS_ENABLEDESKTOPLANDINGPAGE
+            value: "false"
+          - name: MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE
+            value: "false"
+          - name: MM_CALLS_RTCD_URL
+            value: http://mattermost-rtcd.mattermost.svc:8045
+          - name: MM_CALLS_RECORDER_SITE_URL
+            value: http://mattermost.mattermost.svc:8065
+          - name: MM_CALLS_TRANSCRIBER_SITE_URL
+            value: http://mattermost.mattermost.svc:8065
+          - name: MM_OPENIDSETTINGS_ENABLE
+            value: "true"
+          - name: MM_OPENIDSETTINGS_DISCOVERYENDPOINT
+            valueFrom:
+              secretKeyRef:
+                key: discovery_endpoint
+                name: keycloak-client-config
+          - name: MM_OPENIDSETTINGS_BUTTONTEXT
+            value: Keycloak
+          - name: MM_OPENIDSETTINGS_ID
+            valueFrom:
+              secretKeyRef:
+                key: client_id
+                name: keycloak-client-config
+          - name: MM_OPENIDSETTINGS_SECRET
+            valueFrom:
+              secretKeyRef:
+                key: client_secret
+                name: keycloak-client-config
+          - name: PGPASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: user-pass
+                name: postgresql-creds
+          - name: MM_CONFIG
+            value: postgres://postgresql-primary:5432/mattermost?sslmode=disable&connect_timeout=10
+        scheduling:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: app
+                        operator: In
+                        values:
+                          - mattermost
+          tolerations:
+            - effect: NoSchedule
+              key: app
+              operator: Equal
+              value: mattermost
+        resources:
+          limits:
+            cpu: "4"
+            memory: 8Gi
+          requests:
+            cpu: 500m
+            memory: 500Mi
+        volumeMounts:
+          - mountPath: /etc/ssl/certs
+            name: injected-ca-bundle
+            readOnly: true
+        volumes:
+          - name: injected-ca-bundle
+            secret:
+              defaultMode: 440
+              secretName: singularity-ingress-bundle
+    mattermostOperator:
+      image:
+        repository: ${private_registry}${private_registry_image_repo:=/images}/docker.io/mattermost/mattermost-operator
